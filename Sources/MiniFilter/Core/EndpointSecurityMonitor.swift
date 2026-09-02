@@ -3,15 +3,13 @@ import EndpointSecurity
 import Darwin
 
 /// Subscribes to Endpoint Security file events so we see the moment any process
-/// opens, copies or creates a user-facing file — the trigger a normal app cannot
-/// get by watching WhatsApp's container after the fact.
+/// opens, copies or creates a user-facing file.
 ///
 /// OPEN / CLONE / COPYFILE are AUTH events: that one syscall is held in the
 /// kernel until we reply. We retain the message, scan, then ALLOW or DENY
-/// that read/copy — not SIGSTOP of the whole app. The AUTH deadline is only
-/// a few seconds; if the scan would miss it we reply early (fail-open).
-/// A missed AUTH reply hangs that syscall and can kill this client.
-enum EndpointSecurityMonitor {
+/// that read/copy. Finder, Spotlight, and QuickLook are not gated so browsing
+/// stays usable. `--process NAME` still narrows the monitor if you want one app.
+public enum EndpointSecurityMonitor {
 
     struct Options {
         var seconds: TimeInterval?
@@ -37,7 +35,7 @@ enum EndpointSecurityMonitor {
         let inferred: String?
     }
 
-    static func run(arguments: [String]) -> Never {
+    public static func run(arguments: [String]) -> Never {
         setvbuf(stdout, nil, _IONBF, 0)
         let options = parse(arguments)
 
@@ -57,13 +55,13 @@ enum EndpointSecurityMonitor {
         }
         print("log:       \(logFile.path)")
         let verdict = options.scanReject ? "deny" : "allow"
-        print("gate:      hold that AUTH open/clone only, scan up to \(Int(FileScanner.delaySeconds))s, then \(verdict)")
+        print("gate:      hold AUTH open/clone for every user app, scan up to \(Int(FileScanner.delaySeconds))s, then \(verdict)")
         print(String(repeating: "-", count: 72))
-        print("Attach a file in WhatsApp. Only that file open/copy waits; the rest of the app keeps running.")
-        print("If WhatsApp opens the file on its UI thread, that window still waits on the syscall.")
+        print("Attach or send a file in any app (WhatsApp, Chrome, Mail, Slack, …).")
+        print("Only that file open/copy waits; Finder/Spotlight/QuickLook are not gated.")
+        print("If the app opens the file on its UI thread, that window still waits on the syscall.")
         print("Kernel AUTH deadline caps the wait (often ~5–15s). We reply before it, fail-open if needed.")
-        print("Success → that open is allowed and the send proceeds.")
-        print("Failure → that open/copy is denied. Pass --scan-reject to test.")
+        print("Pass --process NAME to watch one app. Pass --scan-reject to test deny.")
         print("Pass --verbose to see every kernel file event.\n")
 
         jsonOutput = options.json
@@ -270,11 +268,11 @@ enum EndpointSecurityMonitor {
         }
 
         let holdOpen = eventName == "OPEN"
-            && UploadGate.isWhatsApp(processName)
+            && UploadGate.shouldGate(process: processName)
             && UploadGate.shouldHoldOpen(path: path, access: accessLabel)
             && !UploadGate.wasAllowed(path: path)
         let holdCopy = (eventName == "CLONE" || eventName == "COPYFILE")
-            && UploadGate.isWhatsApp(processName)
+            && UploadGate.shouldGate(process: processName)
             && UploadGate.shouldHoldCopy(source: path, destination: destination)
             && !UploadGate.wasAllowed(path: path)
 

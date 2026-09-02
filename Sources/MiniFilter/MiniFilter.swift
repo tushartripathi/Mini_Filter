@@ -1,4 +1,5 @@
 import Foundation
+import MiniFilterCore
 
 @main
 enum MiniFilter {
@@ -14,8 +15,9 @@ enum MiniFilter {
 
               ./run_esmonitor.sh [--process NAME] [--seconds N] [--json] [--verbose] [--all-files] [--scan-reject]
 
-            Direct:
+            Default watches every user app. Examples:
 
+              sudo MiniFilter --esmonitor
               sudo MiniFilter --esmonitor --process WhatsApp --seconds 60
 
             """,

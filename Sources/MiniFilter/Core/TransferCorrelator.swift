@@ -114,6 +114,15 @@ enum TransferCorrelator {
         return emit(direction: "upload", path: path, pid: pid, process: process, at: time)
     }
 
+    static func resetForTests() {
+        lock.lock()
+        defer { lock.unlock() }
+        opens.removeAll()
+        uploadsAt.removeAll()
+        cloneDests.removeAll()
+        emitted.removeAll()
+    }
+
     // MARK: - Internals
 
     private static func emit(

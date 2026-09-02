@@ -59,33 +59,59 @@ enum MachDeadline {
 }
 
 /// Holds only the AUTH syscall (that one open/clone/copy) until the scan
-/// returns. The rest of WhatsApp keeps running. Reply always happens before
-/// the kernel AUTH deadline — missing it kills this client and hangs the syscall.
+/// returns. The rest of the target app keeps running. Reply always happens
+/// before the kernel AUTH deadline — missing it kills this client and hangs
+/// the syscall.
 enum UploadGate {
     /// Leave this much headroom so we reply before the kernel kills us.
     private static let deadlineMargin: TimeInterval = 2.0
     private static let minHold: TimeInterval = 0.3
 
+    /// macOS file-system agents — gating them stalls browsing, search, and iCloud.
+    /// User apps (WhatsApp, Chrome, Mail, Slack, …) are gated.
+    private static let skipHoldSubstrings: [String] = [
+        "minifilter",
+        "finder",
+        "quicklook",
+        "mdworker",
+        "mds_stores",
+        "desktopserviceshelper",
+        "fileprovider",
+        "userfileindexing",
+        "corespotlightd",
+        "spotlight",
+        "cloudd",
+        "bird",
+    ]
+
+    /// After a scan allows a file, skip re-holding OPEN→CLONE of *that same
+    /// send* (often a few hundred ms later). Expire quickly so attaching the
+    /// same file again is scanned and delayed like the first time.
+    static let allowReuseWindow: TimeInterval = 2.0
+
     private static let lock = NSLock()
     private static var inFlight: Set<String> = []
-    private static var blocked: Set<String> = []
-    private static var allowed: Set<String> = []
+    private static var verdicts = VerdictCache(allowReuseWindow: allowReuseWindow)
     private static var outstanding: [PendingAuth] = []
 
     static func isBlocked(path: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return blocked.contains(path)
+        return verdicts.isBlocked(path: path)
     }
 
     static func wasAllowed(path: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return allowed.contains(path)
+        return verdicts.wasAllowed(path: path)
     }
 
-    static func isWhatsApp(_ process: String) -> Bool {
-        process.lowercased().contains("whatsapp")
+    /// True for apps we will scan-and-hold. False for this monitor and for
+    /// system file browsers/indexers that must not be delayed.
+    static func shouldGate(process: String) -> Bool {
+        let name = process.lowercased()
+        if name == "mds" { return false }
+        return !skipHoldSubstrings.contains { name.contains($0) }
     }
 
     static func shouldHoldOpen(path: String, access: String?) -> Bool {
@@ -99,8 +125,8 @@ enum UploadGate {
     }
 
     /// Retain the AUTH message and reply after the scan (or just before deadline).
-    /// Returns false if we cannot hold (no time, or already decided) — caller
-    /// must reply in the ES callback.
+    /// Returns false if we cannot hold (no time, denied, or same-send reuse) —
+    /// caller must reply in the ES callback.
     @discardableResult
     static func holdSyscall(
         client: OpaquePointer,
@@ -114,7 +140,7 @@ enum UploadGate {
         onScanStop: @escaping (FileScanner.Verdict, _ waited: TimeInterval, _ deadlineForced: Bool) -> Void
     ) -> Bool {
         lock.lock()
-        if blocked.contains(path) || allowed.contains(path) {
+        if verdicts.isBlocked(path: path) || verdicts.wasAllowed(path: path) {
             lock.unlock()
             return false
         }
@@ -157,7 +183,7 @@ enum UploadGate {
         return true
     }
 
-    /// Allow every held syscall so WhatsApp is not left stuck on quit.
+    /// Allow every held syscall so the target app is not left stuck on quit.
     static func replyAllAllow() {
         lock.lock()
         let items = outstanding
@@ -195,9 +221,9 @@ enum UploadGate {
         let siblings = outstanding.filter { $0.key == pending.key }
         outstanding.removeAll { $0.key == pending.key }
         if verdict == .deny {
-            blocked.insert(pending.path)
+            verdicts.recordDeny(path: pending.path)
         } else {
-            allowed.insert(pending.path)
+            verdicts.recordAllow(path: pending.path)
         }
         inFlight.remove(pending.key)
         lock.unlock()
