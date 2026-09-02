@@ -1,0 +1,16 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+
+# Secrets and local env
+.env
+.env.*
+*.pem
+*.p12
+*.key
+credentials.json
+
+# macOS
+.DS_Store
