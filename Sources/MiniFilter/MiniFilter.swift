@@ -12,7 +12,7 @@ enum MiniFilter {
             """
             MiniFilter Endpoint Security PoC
 
-              ./run_esmonitor.sh [--process NAME] [--seconds N] [--json] [--verbose] [--all-files]
+              ./run_esmonitor.sh [--process NAME] [--seconds N] [--json] [--verbose] [--all-files] [--scan-reject]
 
             Direct:
 

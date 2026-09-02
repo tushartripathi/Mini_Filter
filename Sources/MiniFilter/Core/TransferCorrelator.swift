@@ -100,6 +100,20 @@ enum TransferCorrelator {
         }
     }
 
+    /// Record an upload at file-selection time so a later clone does not log twice.
+    @discardableResult
+    static func recordUpload(
+        path: String,
+        pid: pid_t,
+        process: String,
+        at time: Date
+    ) -> Transfer? {
+        lock.lock()
+        defer { lock.unlock() }
+        prune(now: time)
+        return emit(direction: "upload", path: path, pid: pid, process: process, at: time)
+    }
+
     // MARK: - Internals
 
     private static func emit(
