@@ -6,12 +6,11 @@ import Darwin
 /// opens, copies or creates a user-facing file — the trigger a normal app cannot
 /// get by watching WhatsApp's container after the fact.
 ///
-/// OPEN / CLONE / COPYFILE are AUTH events: the syscall is held in the kernel
-/// until we reply. The AUTH deadline is only a few seconds, so a 10s scan cannot
-/// sit on that reply. Instead we SIGSTOP WhatsApp immediately, ALLOW the syscall,
-/// scan while it is frozen, then SIGCONT (allow) or DENY later copies (block).
-/// A missed AUTH reply hangs the target and can kill this client — every AUTH
-/// event is answered before the handler returns.
+/// OPEN / CLONE / COPYFILE are AUTH events: that one syscall is held in the
+/// kernel until we reply. We retain the message, scan, then ALLOW or DENY
+/// that read/copy — not SIGSTOP of the whole app. The AUTH deadline is only
+/// a few seconds; if the scan would miss it we reply early (fail-open).
+/// A missed AUTH reply hangs that syscall and can kill this client.
 enum EndpointSecurityMonitor {
 
     struct Options {
@@ -58,11 +57,13 @@ enum EndpointSecurityMonitor {
         }
         print("log:       \(logFile.path)")
         let verdict = options.scanReject ? "deny" : "allow"
-        print("gate:      SIGSTOP WhatsApp on file open, scan \(Int(FileScanner.delaySeconds))s, then \(verdict)")
+        print("gate:      hold that AUTH open/clone only, scan up to \(Int(FileScanner.delaySeconds))s, then \(verdict)")
         print(String(repeating: "-", count: 72))
-        print("Attach a file in WhatsApp. The app freezes until the scan finishes.")
-        print("Success → WhatsApp resumes and the send proceeds.")
-        print("Failure → later copies of that file are denied. Pass --scan-reject to test.")
+        print("Attach a file in WhatsApp. Only that file open/copy waits; the rest of the app keeps running.")
+        print("If WhatsApp opens the file on its UI thread, that window still waits on the syscall.")
+        print("Kernel AUTH deadline caps the wait (often ~5–15s). We reply before it, fail-open if needed.")
+        print("Success → that open is allowed and the send proceeds.")
+        print("Failure → that open/copy is denied. Pass --scan-reject to test.")
         print("Pass --verbose to see every kernel file event.\n")
 
         jsonOutput = options.json
@@ -70,7 +71,6 @@ enum EndpointSecurityMonitor {
         processFilters = options.processFilters.map { $0.lowercased() }
         userFacingOnly = options.userFacingOnly
         FileScanner.simulatedVerdict = options.scanReject ? .deny : .allow
-        ProcessHold.installExitHandler()
 
         var client: OpaquePointer?
         let result = es_new_client(&client) { _, message in
@@ -154,8 +154,9 @@ enum EndpointSecurityMonitor {
         let msg = message.pointee
         let auth = isAuth(msg.event_type)
         var denyAuth = false
+        var retainForScan = false
         defer {
-            if auth {
+            if auth && !retainForScan {
                 respondAuth(message, deny: denyAuth)
             }
         }
@@ -271,9 +272,11 @@ enum EndpointSecurityMonitor {
         let holdOpen = eventName == "OPEN"
             && UploadGate.isWhatsApp(processName)
             && UploadGate.shouldHoldOpen(path: path, access: accessLabel)
+            && !UploadGate.wasAllowed(path: path)
         let holdCopy = (eventName == "CLONE" || eventName == "COPYFILE")
             && UploadGate.isWhatsApp(processName)
             && UploadGate.shouldHoldCopy(source: path, destination: destination)
+            && !UploadGate.wasAllowed(path: path)
 
         if holdOpen || holdCopy {
             if let transfer = TransferCorrelator.recordUpload(
@@ -284,12 +287,17 @@ enum EndpointSecurityMonitor {
             ) {
                 emitTransfer(transfer)
             }
-            startUploadGate(
+            if let client = esClient,
+               startUploadGate(
+                client: client,
+                message: message,
                 path: path,
                 destination: destination,
                 pid: pid,
                 process: processName
-            )
+               ) {
+                retainForScan = true
+            }
             return
         }
 
@@ -318,12 +326,15 @@ enum EndpointSecurityMonitor {
         persist(event)
     }
 
+    @discardableResult
     private static func startUploadGate(
+        client: OpaquePointer,
+        message: UnsafePointer<es_message_t>,
         path: String,
         destination: String?,
         pid: pid_t,
         process: String
-    ) {
+    ) -> Bool {
         let transfer = TransferCorrelator.Transfer(
             timestamp: Date(),
             direction: "upload",
@@ -331,38 +342,41 @@ enum EndpointSecurityMonitor {
             process: process,
             path: path
         )
-        _ = UploadGate.begin(
+        return UploadGate.holdSyscall(
+            client: client,
+            message: message,
             path: path,
             destination: destination,
             pid: pid,
             process: process,
-            onHold: { froze in
+            onHold: { seconds in
                 emitGate(
                     label: "HOLD",
                     pid: pid,
                     process: process,
                     path: path,
-                    detail: froze ? "SIGSTOP (WhatsApp frozen until scan)" : "SIGSTOP failed"
+                    detail: String(format: "AUTH syscall held %.1fs (this open/copy only)", seconds)
                 )
             },
             onScanStart: {
-                emitScan(phase: "SCAN_START", transfer: transfer, at: Date(), verdict: nil)
+                emitScan(phase: "SCAN_START", transfer: transfer, at: Date(), verdict: nil, waited: nil)
             },
-            onScanStop: { verdict in
+            onScanStop: { verdict, waited, deadlineForced in
+                let label = verdict == .allow ? "allowed" : "blocked"
+                let extra = deadlineForced ? " (replied early: AUTH deadline)" : ""
                 emitScan(
                     phase: "SCAN_STOP",
                     transfer: transfer,
                     at: Date(),
-                    verdict: verdict.rawValue == "allow" ? "allowed" : "blocked"
+                    verdict: label + extra,
+                    waited: waited
                 )
-            },
-            onResume: { verdict in
                 emitGate(
-                    label: "RESUME",
+                    label: "REPLY",
                     pid: pid,
                     process: process,
                     path: path,
-                    detail: verdict == .allow ? "SIGCONT allowed — send may proceed" : "SIGCONT blocked — copies of this file denied"
+                    detail: verdict == .allow ? "AUTH allow — that read/copy may proceed" : "AUTH deny — that read/copy refused"
                 )
             }
         )
@@ -404,7 +418,8 @@ enum EndpointSecurityMonitor {
         phase: String,
         transfer: TransferCorrelator.Transfer,
         at time: Date,
-        verdict: String?
+        verdict: String?,
+        waited: TimeInterval?
     ) {
         let event = FileScanner.Event(
             timestamp: time,
@@ -413,7 +428,7 @@ enum EndpointSecurityMonitor {
             process: transfer.process,
             path: transfer.path,
             verdict: verdict,
-            delaySeconds: phase == "SCAN_STOP" ? FileScanner.delaySeconds : nil
+            delaySeconds: waited
         )
         if jsonOutput, let data = try? encoder.encode(event),
            let line = String(data: data, encoding: .utf8) {
@@ -423,7 +438,11 @@ enum EndpointSecurityMonitor {
             let label = phase == "SCAN_START" ? "SCAN START" : "SCAN STOP "
             var line = "[\(clock)] \(label)  \(transfer.process)[\(transfer.pid)]  \(shellQuoted(transfer.path))"
             if let verdict {
-                line += "  \(verdict) (simulated, \(FileScanner.delaySeconds)s)"
+                if let waited {
+                    line += "  \(verdict) (simulated, \(String(format: "%.1f", waited))s)"
+                } else {
+                    line += "  \(verdict)"
+                }
             }
             print(line)
         }
@@ -502,7 +521,7 @@ enum EndpointSecurityMonitor {
     // MARK: - ES helpers
 
     private static func stop(message: String) {
-        ProcessHold.resumeAll()
+        UploadGate.replyAllAllow()
         if let client = esClient {
             es_delete_client(client)
             esClient = nil

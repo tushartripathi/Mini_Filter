@@ -29,13 +29,15 @@ enum FileScanner {
         attributes: .concurrent
     )
 
-    /// Call `onStart` immediately, wait `delaySeconds`, then `onStop` with the verdict.
+    /// Call `onStart` immediately, wait `delay` (default `delaySeconds`), then `onStop`.
     static func scan(
+        delay: TimeInterval? = nil,
         onStart: @escaping () -> Void,
         onStop: @escaping (Verdict) -> Void
     ) {
+        let wait = delay ?? delaySeconds
         onStart()
-        queue.asyncAfter(deadline: .now() + delaySeconds) {
+        queue.asyncAfter(deadline: .now() + wait) {
             onStop(simulatedVerdict)
         }
     }
