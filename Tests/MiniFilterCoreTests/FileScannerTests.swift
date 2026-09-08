@@ -7,8 +7,8 @@ final class FileScannerTests: XCTestCase {
         super.tearDown()
     }
 
-    func testDefaultDelayIsTenSeconds() {
-        XCTAssertEqual(FileScanner.delaySeconds, 10)
+    func testDefaultDelayIsTwentySeconds() {
+        XCTAssertEqual(FileScanner.delaySeconds, 45)
     }
 
     func testScanCallsStartThenAllow() {

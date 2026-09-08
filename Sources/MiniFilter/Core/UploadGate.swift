@@ -9,14 +9,25 @@ final class PendingAuth {
     let message: UnsafePointer<es_message_t>
     let path: String
     let key: String
+    let pid: pid_t
+    let threadId: UInt64?
     private let lock = NSLock()
     private var replied = false
 
-    init(client: OpaquePointer, message: UnsafePointer<es_message_t>, path: String, key: String) {
+    init(
+        client: OpaquePointer,
+        message: UnsafePointer<es_message_t>,
+        path: String,
+        key: String,
+        pid: pid_t,
+        threadId: UInt64?
+    ) {
         self.client = client
         self.message = message
         self.path = path
         self.key = key
+        self.pid = pid
+        self.threadId = threadId
         es_retain_message(message)
     }
 
@@ -58,14 +69,38 @@ enum MachDeadline {
     }
 }
 
-/// Holds only the AUTH syscall (that one open/clone/copy) until the scan
-/// returns. The rest of the target app keeps running. Reply always happens
-/// before the kernel AUTH deadline — missing it kills this client and hangs
-/// the syscall.
+/// Holds the AUTH syscall until the scan returns, then ALLOW or DENY.
+/// The kernel AUTH deadline is ~15s; missing it kills this client. When the
+/// scan is longer than that window we suspend the issuing thread (or SIGSTOP
+/// the process as a fallback) so it cannot use the fail-open AUTH reply until
+/// the full delay elapses.
 enum UploadGate {
     /// Leave this much headroom so we reply before the kernel kills us.
     private static let deadlineMargin: TimeInterval = 2.0
     private static let minHold: TimeInterval = 0.3
+
+    struct HoldPlan: Equatable {
+        var scanSeconds: TimeInterval
+        var authSeconds: TimeInterval
+        /// True when the scan outlasts the usable AUTH window and we must
+        /// freeze the issuing thread (or process) for the remainder.
+        var needsFreeze: Bool
+    }
+
+    static func planHold(scanSeconds: TimeInterval, usableAuthSeconds: TimeInterval) -> HoldPlan {
+        let auth = min(scanSeconds, max(usableAuthSeconds, 0))
+        return HoldPlan(
+            scanSeconds: scanSeconds,
+            authSeconds: auth,
+            needsFreeze: scanSeconds > usableAuthSeconds + 0.01
+        )
+    }
+
+    static func threadId(from message: UnsafePointer<es_message_t>) -> UInt64? {
+        let msg = message.pointee
+        guard msg.version >= 4, let thread = msg.thread else { return nil }
+        return thread.pointee.thread_id
+    }
 
     /// macOS file-system agents — gating them stalls browsing, search, and iCloud.
     /// User apps (WhatsApp, Chrome, Mail, Slack, …) are gated.
@@ -135,9 +170,15 @@ enum UploadGate {
         destination: String?,
         pid: pid_t,
         process: String,
-        onHold: @escaping (_ seconds: TimeInterval) -> Void,
+        onHold: @escaping (
+            _ scanSeconds: TimeInterval,
+            _ authSeconds: TimeInterval,
+            _ freezeMode: ProcessHold.Mode?
+        ) -> Void,
         onScanStart: @escaping () -> Void,
-        onScanStop: @escaping (FileScanner.Verdict, _ waited: TimeInterval, _ deadlineForced: Bool) -> Void
+        onAuthReply: @escaping (_ deny: Bool, _ stillFrozen: Bool) -> Void,
+        onScanStop: @escaping (FileScanner.Verdict, _ waited: TimeInterval) -> Void,
+        onResume: @escaping (_ mode: ProcessHold.Mode) -> Void
     ) -> Bool {
         lock.lock()
         if verdicts.isBlocked(path: path) || verdicts.wasAllowed(path: path) {
@@ -162,7 +203,16 @@ enum UploadGate {
             return false
         }
 
-        let pending = PendingAuth(client: client, message: message, path: path, key: key)
+        let tid = threadId(from: message)
+        let plan = planHold(scanSeconds: FileScanner.delaySeconds, usableAuthSeconds: usable)
+        let pending = PendingAuth(
+            client: client,
+            message: message,
+            path: path,
+            key: key,
+            pid: pid,
+            threadId: tid
+        )
         lock.lock()
         outstanding.append(pending)
         lock.unlock()
@@ -170,16 +220,31 @@ enum UploadGate {
         if alreadyScanning {
             // Extra open/clone of the same file: do not start a second scan.
             // Reply this syscall when the first verdict lands, or at its own deadline.
-            armDeadline(pending, usable: usable, destination: destination, onScanStop: onScanStop)
+            armAuthReply(pending, after: usable, deny: false, onAuthReply: onAuthReply)
             return true
         }
 
-        let wait = min(FileScanner.delaySeconds, usable)
-        onHold(wait)
-        FileScanner.scan(delay: wait, onStart: onScanStart) { verdict in
-            finish(pending: pending, destination: destination, verdict: verdict, waited: wait, deadlineForced: false, onScanStop: onScanStop)
+        var freezeMode: ProcessHold.Mode?
+        if plan.needsFreeze {
+            freezeMode = ProcessHold.freeze(pid: pid, threadId: tid, maxSeconds: plan.scanSeconds)
         }
-        armDeadline(pending, usable: usable, destination: destination, onScanStop: onScanStop)
+        onHold(plan.scanSeconds, plan.authSeconds, freezeMode)
+
+        FileScanner.scan(delay: plan.scanSeconds, onStart: onScanStart) { verdict in
+            finish(
+                pending: pending,
+                destination: destination,
+                verdict: verdict,
+                waited: plan.scanSeconds,
+                freezeMode: freezeMode,
+                onAuthReply: onAuthReply,
+                onScanStop: onScanStop,
+                onResume: onResume
+            )
+        }
+        // Always answer AUTH before the kernel deadline. If the scan is longer,
+        // this fail-opens the syscall; the suspended thread cannot proceed yet.
+        armAuthReply(pending, after: usable, deny: false, onAuthReply: onAuthReply)
         return true
     }
 
@@ -193,16 +258,19 @@ enum UploadGate {
         for item in items {
             item.reply(deny: false)
         }
+        ProcessHold.thawAll()
     }
 
-    private static func armDeadline(
+    /// Fail-open AUTH so this client is not killed. Does not end the scan.
+    private static func armAuthReply(
         _ pending: PendingAuth,
-        usable: TimeInterval,
-        destination: String?,
-        onScanStop: @escaping (FileScanner.Verdict, TimeInterval, Bool) -> Void
+        after: TimeInterval,
+        deny: Bool,
+        onAuthReply: @escaping (Bool, Bool) -> Void
     ) {
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + usable) {
-            finish(pending: pending, destination: destination, verdict: .allow, waited: usable, deadlineForced: true, onScanStop: onScanStop)
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + after) {
+            guard pending.reply(deny: deny) else { return }
+            onAuthReply(deny, ProcessHold.isFrozen(pid: pending.pid, threadId: pending.threadId))
         }
     }
 
@@ -211,16 +279,21 @@ enum UploadGate {
         destination: String?,
         verdict: FileScanner.Verdict,
         waited: TimeInterval,
-        deadlineForced: Bool,
-        onScanStop: @escaping (FileScanner.Verdict, TimeInterval, Bool) -> Void
+        freezeMode: ProcessHold.Mode?,
+        onAuthReply: @escaping (Bool, Bool) -> Void,
+        onScanStop: @escaping (FileScanner.Verdict, TimeInterval) -> Void,
+        onResume: @escaping (ProcessHold.Mode) -> Void
     ) {
-        guard pending.reply(deny: verdict == .deny) else { return }
+        let deny = verdict == .deny
+        if pending.reply(deny: deny) {
+            onAuthReply(deny, ProcessHold.isFrozen(pid: pending.pid, threadId: pending.threadId))
+        }
 
         lock.lock()
         outstanding.removeAll { $0 === pending }
         let siblings = outstanding.filter { $0.key == pending.key }
         outstanding.removeAll { $0.key == pending.key }
-        if verdict == .deny {
+        if deny {
             verdicts.recordDeny(path: pending.path)
         } else {
             verdicts.recordAllow(path: pending.path)
@@ -229,13 +302,18 @@ enum UploadGate {
         lock.unlock()
 
         for sibling in siblings {
-            sibling.reply(deny: verdict == .deny)
+            if sibling.reply(deny: deny) {
+                onAuthReply(deny, ProcessHold.isFrozen(pid: sibling.pid, threadId: sibling.threadId))
+            }
         }
 
-        if verdict == .deny, let destination {
+        if deny, let destination {
             quarantine(destination)
         }
-        onScanStop(verdict, waited, deadlineForced)
+        onScanStop(verdict, waited)
+        if ProcessHold.thaw(pid: pending.pid, threadId: pending.threadId), let freezeMode {
+            onResume(freezeMode)
+        }
     }
 
     private static func quarantine(_ path: String) {

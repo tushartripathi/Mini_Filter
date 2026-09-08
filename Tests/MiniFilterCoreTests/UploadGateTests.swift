@@ -37,4 +37,16 @@ final class UploadGateTests: XCTestCase {
             UploadGate.shouldHoldCopy(source: Fixtures.whatsAppCopy, destination: Fixtures.whatsAppCopy)
         )
     }
+
+    func testPlanHoldFreezesWhenScanExceedsAuthDeadline() {
+        let over = UploadGate.planHold(scanSeconds: 20, usableAuthSeconds: 13)
+        XCTAssertEqual(over.scanSeconds, 20)
+        XCTAssertEqual(over.authSeconds, 13)
+        XCTAssertTrue(over.needsFreeze)
+
+        let under = UploadGate.planHold(scanSeconds: 10, usableAuthSeconds: 13)
+        XCTAssertEqual(under.scanSeconds, 10)
+        XCTAssertEqual(under.authSeconds, 10)
+        XCTAssertFalse(under.needsFreeze)
+    }
 }

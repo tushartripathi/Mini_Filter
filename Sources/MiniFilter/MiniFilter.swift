@@ -9,6 +9,14 @@ enum MiniFilter {
             EndpointSecurityMonitor.run(arguments: args)
         }
 
+        if let idx = args.firstIndex(of: "--resume-hold"),
+           args.count > idx + 1,
+           let pid = Int32(args[idx + 1]) {
+            let threadId = args.count > idx + 2 ? UInt64(args[idx + 2]) : nil
+            ProcessHold.forceResume(pid: pid, threadId: threadId)
+            exit(0)
+        }
+
         fputs(
             """
             MiniFilter Endpoint Security PoC

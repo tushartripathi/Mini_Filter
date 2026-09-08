@@ -55,12 +55,12 @@ public enum EndpointSecurityMonitor {
         }
         print("log:       \(logFile.path)")
         let verdict = options.scanReject ? "deny" : "allow"
-        print("gate:      hold AUTH open/clone for every user app, scan up to \(Int(FileScanner.delaySeconds))s, then \(verdict)")
+        print("gate:      scan \(Int(FileScanner.delaySeconds))s then \(verdict); suspend issuing thread if that exceeds AUTH deadline")
         print(String(repeating: "-", count: 72))
         print("Attach or send a file in any app (WhatsApp, Chrome, Mail, Slack, …).")
         print("Only that file open/copy waits; Finder/Spotlight/QuickLook are not gated.")
         print("If the app opens the file on its UI thread, that window still waits on the syscall.")
-        print("Kernel AUTH deadline caps the wait (often ~5–15s). We reply before it, fail-open if needed.")
+        print("Kernel AUTH must be answered in ~15s. Longer scans suspend that thread (SIGSTOP fallback).")
         print("Pass --process NAME to watch one app. Pass --scan-reject to test deny.")
         print("Pass --verbose to see every kernel file event.\n")
 
@@ -347,35 +347,60 @@ public enum EndpointSecurityMonitor {
             destination: destination,
             pid: pid,
             process: process,
-            onHold: { seconds in
-                emitGate(
-                    label: "HOLD",
-                    pid: pid,
-                    process: process,
-                    path: path,
-                    detail: String(format: "AUTH syscall held %.1fs (this open/copy only)", seconds)
-                )
+            onHold: { scanSeconds, authSeconds, freezeMode in
+                let detail: String
+                switch freezeMode {
+                case .thread(let id):
+                    detail = String(
+                        format: "scan %.1fs; thread %llu suspended (kernel AUTH reply in %.1fs)",
+                        scanSeconds,
+                        id,
+                        authSeconds
+                    )
+                case .process:
+                    detail = String(
+                        format: "scan %.1fs; process SIGSTOP fallback (kernel AUTH reply in %.1fs)",
+                        scanSeconds,
+                        authSeconds
+                    )
+                case nil:
+                    detail = String(format: "AUTH syscall held %.1fs (this open/copy only)", scanSeconds)
+                }
+                emitGate(label: "HOLD", pid: pid, process: process, path: path, detail: detail)
             },
             onScanStart: {
                 emitScan(phase: "SCAN_START", transfer: transfer, at: Date(), verdict: nil, waited: nil)
             },
-            onScanStop: { verdict, waited, deadlineForced in
+            onAuthReply: { deny, stillFrozen in
+                let detail: String
+                if deny {
+                    detail = "AUTH deny — that read/copy refused"
+                } else if stillFrozen {
+                    detail = "AUTH allow — thread/process still held until scan ends"
+                } else {
+                    detail = "AUTH allow — that read/copy may proceed"
+                }
+                emitGate(label: "REPLY", pid: pid, process: process, path: path, detail: detail)
+            },
+            onScanStop: { verdict, waited in
                 let label = verdict == .allow ? "allowed" : "blocked"
-                let extra = deadlineForced ? " (replied early: AUTH deadline)" : ""
                 emitScan(
                     phase: "SCAN_STOP",
                     transfer: transfer,
                     at: Date(),
-                    verdict: label + extra,
+                    verdict: label,
                     waited: waited
                 )
-                emitGate(
-                    label: "REPLY",
-                    pid: pid,
-                    process: process,
-                    path: path,
-                    detail: verdict == .allow ? "AUTH allow — that read/copy may proceed" : "AUTH deny — that read/copy refused"
-                )
+            },
+            onResume: { mode in
+                let detail: String
+                switch mode {
+                case .thread(let id):
+                    detail = "thread \(id) resumed — that send may continue"
+                case .process:
+                    detail = "SIGCONT — process may continue"
+                }
+                emitGate(label: "RESUME", pid: pid, process: process, path: path, detail: detail)
             }
         )
     }
