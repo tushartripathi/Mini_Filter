@@ -4,7 +4,7 @@ import Foundation
 /// Sleeps, then returns a verdict — so the hold + allow/block path can be
 /// exercised without a real API.
 enum FileScanner {
-    static var delaySeconds: TimeInterval = 45
+    static var delaySeconds: TimeInterval = 17
     /// Simulated scanner result. Set `--scan-reject` to test the block path.
     static var simulatedVerdict: Verdict = .allow
 
@@ -21,6 +21,8 @@ enum FileScanner {
         let path: String
         let verdict: String?
         let delaySeconds: TimeInterval?
+        var tabTitle: String? = nil
+        var tabURL: String? = nil
     }
 
     private static let queue = DispatchQueue(

@@ -271,13 +271,33 @@ This repo now includes the **file half** as a notify-only PoC.
 
 `--process` may be repeated. Default is every process, but only
 user-facing extensions (the same allowlist as the WhatsApp monitor).
-`--all-files` drops that filter.
+`--all-files` drops that filter. `--process Safari` also matches WebKit
+helpers (`com.apple.WebKit.WebContent`, Networking): those processes
+open the file, not the Safari UI binary.
 
-Send a document from WhatsApp (or attach one in Mail, or open one in Chrome).
-You should see an `OPEN` line for the original path **before** WhatsApp copies
+Safari lives under `/System/Cryptexes/…/Safari.app`. The monitor mutes
+`/System/` as a **file** prefix so kernel/system reads stay quiet; it does
+not mute `/System/` as a **process** prefix (that hid Safari and WebKit).
+
+Send a document from WhatsApp (or attach one in Mail, Safari, or Chrome).
+You should see an upload line for the original path **before** the app copies
 it into its container — that is the trigger the database approach never had.
 
 JSONL is also written to `~/Library/Logs/MiniFilter/es-access-YYYY-MM-DD.jsonl`.
+
+Browser uploads/downloads can append `tab 'Title'  https://…` when a **user-level**
+helper can read the window title. `sudo MiniFilter --esmonitor` stays root; TCC
+will not give that process Chrome/Safari window names. Run the helper as the
+Aqua user (no sudo):
+
+```bash
+./run_tabhelper.sh              # foreground, for local testing
+./run_tabhelper.sh --install    # LaunchAgent at login
+```
+
+Grant **Accessibility** to **MiniFilterTabHelper**
+(not to the root ES binary). See `packaging/TabHelper-TCC.md`. Helper miss or a
+300ms timeout leaves the log line unchanged — no tab suffix, no error line.
 
 ### What you need for the PoC to actually subscribe
 

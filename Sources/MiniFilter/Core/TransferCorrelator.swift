@@ -14,6 +14,15 @@ enum TransferCorrelator {
         let pid: Int32
         let process: String
         let path: String
+        var tabTitle: String? = nil
+        var tabURL: String? = nil
+
+        func withTab(title: String?, url: String?) -> Transfer {
+            var copy = self
+            copy.tabTitle = title
+            copy.tabURL = url
+            return copy
+        }
     }
 
     private static let lock = NSLock()

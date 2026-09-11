@@ -233,7 +233,20 @@ enum Monitor {
     }
 
     private static func muteNoisyPaths(_ client: OpaquePointer) {
-        for prefix in ["/System/", "/usr/", "/bin/", "/sbin/", "/private/var/db/", "/Library/Apple/", "/dev/"] {
+        // TARGET_PREFIX: ignore opens of system files, not system *apps*.
+        // Process-prefix `/System/` hides Safari (cryptex) and WebKit XPCs.
+        let targets = [
+            "/System/", "/usr/", "/bin/", "/sbin/",
+            "/private/var/db/", "/Library/Apple/", "/dev/",
+        ]
+        for prefix in targets {
+            _ = prefix.withCString { es_mute_path(client, $0, ES_MUTE_PATH_TYPE_TARGET_PREFIX) }
+        }
+        for prefix in [
+            "/System/Library/CoreServices/",
+            "/System/Library/PrivateFrameworks/",
+            "/usr/libexec/",
+        ] {
             _ = prefix.withCString { es_mute_path(client, $0, ES_MUTE_PATH_TYPE_PREFIX) }
         }
     }

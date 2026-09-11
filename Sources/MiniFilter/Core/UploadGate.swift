@@ -104,10 +104,26 @@ enum UploadGate {
 
     /// macOS file-system agents — gating them stalls browsing, search, and iCloud.
     /// User apps (WhatsApp, Chrome, Mail, Slack, …) are gated.
+    /// Short names (`rg`, `git`) are exact so they cannot match inside Chrome, etc.
+    private static let skipHoldExact: Set<String> = [
+        "mds",
+        "rg",
+        "git",
+        "ripgrep",
+    ]
+
+    private static let skipHoldPrefixes: [String] = [
+        "git-",
+    ]
+
     private static let skipHoldSubstrings: [String] = [
         "minifilter",
         "finder",
         "quicklook",
+        "thumbnailextension",
+        "thumbnailing",
+        "qlgenerator",
+        "qlpreview",
         "mdworker",
         "mds_stores",
         "desktopserviceshelper",
@@ -117,6 +133,8 @@ enum UploadGate {
         "spotlight",
         "cloudd",
         "bird",
+        "openandsavepanel",
+        "filecoordinationd",
     ]
 
     /// After a scan allows a file, skip re-holding OPEN→CLONE of *that same
@@ -144,8 +162,9 @@ enum UploadGate {
     /// True for apps we will scan-and-hold. False for this monitor and for
     /// system file browsers/indexers that must not be delayed.
     static func shouldGate(process: String) -> Bool {
-        let name = process.lowercased()
-        if name == "mds" { return false }
+        let name = (process as NSString).lastPathComponent.lowercased()
+        if skipHoldExact.contains(name) { return false }
+        if skipHoldPrefixes.contains(where: { name.hasPrefix($0) }) { return false }
         return !skipHoldSubstrings.contains { name.contains($0) }
     }
 

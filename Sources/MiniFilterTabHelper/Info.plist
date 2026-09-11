@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.minifilter.tabhelper</string>
+    <key>CFBundleName</key>
+    <string>MiniFilter Tab Helper</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>MiniFilter reads the active browser tab title and URL so file-transfer logs can show which page was involved.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>MiniFilter reads the browser window title for the process that opened or saved a file, not the frontmost application.</string>
+    <key>NSAppleScriptEnabled</key>
+    <true/>
+</dict>
+</plist>

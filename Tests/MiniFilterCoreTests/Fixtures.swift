@@ -12,4 +12,5 @@ enum Fixtures {
     static let whatsAppStaging = "/Users/work/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/tmp/whatsapp-inbox/a.png"
     static let appBundle = "/Users/work/Applications/WhatsApp.app/Contents/Resources/icon.png"
     static let blob = "/Users/work/Desktop/payload.dat"
+    static let cursorSkill = "/Users/work/.cursor/skills-cursor/review/SKILL.md"
 }

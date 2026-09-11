@@ -5,6 +5,10 @@ import MiniFilterCore
 enum MiniFilter {
     static func main() {
         let args = CommandLine.arguments
+        if args.contains("--tab-helper") {
+            TabHelper.runServer()
+        }
+
         if args.contains("--esmonitor") {
             EndpointSecurityMonitor.run(arguments: args)
         }
@@ -22,11 +26,17 @@ enum MiniFilter {
             MiniFilter Endpoint Security PoC
 
               ./run_esmonitor.sh [--process NAME] [--seconds N] [--json] [--verbose] [--all-files] [--scan-reject]
+              ./run_tabhelper.sh
 
             Default watches every user app. Examples:
 
+              MiniFilter --tab-helper
               sudo MiniFilter --esmonitor
               sudo MiniFilter --esmonitor --process WhatsApp --seconds 60
+
+            The tab helper must run as the Aqua user (no sudo). Grant
+            Accessibility to MiniFilterTabHelper, not to the root ES binary.
+            See packaging/TabHelper-TCC.md.
 
             """,
             stderr

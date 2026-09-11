@@ -7,11 +7,22 @@ final class UploadGateTests: XCTestCase {
         XCTAssertTrue(UploadGate.shouldGate(process: "Google Chrome"))
         XCTAssertTrue(UploadGate.shouldGate(process: "Mail"))
         XCTAssertTrue(UploadGate.shouldGate(process: "Slack"))
+        XCTAssertTrue(UploadGate.shouldGate(process: "Safari"))
+        XCTAssertTrue(UploadGate.shouldGate(process: "com.apple.WebKit.WebContent"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "filecoordinationd"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "com.apple.appkit.xpc.openAndSavePanelService"))
         XCTAssertFalse(UploadGate.shouldGate(process: "Finder"))
         XCTAssertFalse(UploadGate.shouldGate(process: "QuickLookUIService"))
         XCTAssertFalse(UploadGate.shouldGate(process: "mds"))
         XCTAssertFalse(UploadGate.shouldGate(process: "mdworker"))
         XCTAssertFalse(UploadGate.shouldGate(process: "MiniFilter"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "TextThumbnailExtension"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "QuickLookThumbnailing"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "rg"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "git"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "git-remote-https"))
+        XCTAssertTrue(UploadGate.shouldGate(process: "GitHub Desktop"))
+        XCTAssertTrue(UploadGate.shouldGate(process: "org.mozilla.firefox"))
     }
 
     func testHoldsReadOfUserSource() {
@@ -21,6 +32,7 @@ final class UploadGateTests: XCTestCase {
         XCTAssertFalse(UploadGate.shouldHoldOpen(path: Fixtures.desktopPNG, access: "write"))
         XCTAssertFalse(UploadGate.shouldHoldOpen(path: Fixtures.whatsAppCopy, access: "read"))
         XCTAssertFalse(UploadGate.shouldHoldOpen(path: Fixtures.blob, access: "read"))
+        XCTAssertFalse(UploadGate.shouldHoldOpen(path: Fixtures.cursorSkill, access: "read"))
     }
 
     func testHoldsCopyIntoAppContainerOnly() {

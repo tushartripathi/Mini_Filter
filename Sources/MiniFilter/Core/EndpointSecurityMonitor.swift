@@ -49,6 +49,7 @@ public enum EndpointSecurityMonitor {
         print("events:    UPLOAD / DOWNLOAD (original file path)")
         print("files:     \(options.userFacingOnly ? "user-facing extensions only" : "all paths")")
         print("processes: \(options.processFilters.isEmpty ? "all" : options.processFilters.joined(separator: ", "))")
+        print("tabs:      Chrome/Edge/Brave from the profile on disk; Safari via WebKit helpers")
         if options.verbose { print("verbose:   raw Endpoint Security events") }
         if let seconds = options.seconds {
             print("duration:  \(Int(seconds))s")
@@ -228,7 +229,7 @@ public enum EndpointSecurityMonitor {
 
         guard !path.isEmpty else { return }
         if shouldIgnore(path: path) { return }
-        if let destination, shouldIgnore(path: destination) && shouldIgnore(path: path) { return }
+        if let destination, shouldIgnore(path: destination) { return }
         if userFacingOnly && !FileClassifier.isUserFacingFile(path: path) {
             if let destination, FileClassifier.isUserFacingFile(path: destination) {
                 // Keep copies whose destination is a real document (WhatsApp staging).
@@ -244,6 +245,7 @@ public enum EndpointSecurityMonitor {
                 pid: pid,
                 process: processName,
                 path: path,
+                page: browserPage(process: processName, pid: pid, path: path, direction: "upload"),
                 detail: "scan denied"
             )
             return
@@ -277,13 +279,14 @@ public enum EndpointSecurityMonitor {
             && !UploadGate.wasAllowed(path: path)
 
         if holdOpen || holdCopy {
+            let page = browserPage(process: processName, pid: pid, path: path, direction: "upload")
             if let transfer = TransferCorrelator.recordUpload(
                 path: path,
                 pid: pid,
                 process: processName,
                 at: now
             ) {
-                emitTransfer(transfer)
+                emitTransfer(transfer.withTab(title: page?.title, url: page?.url))
             }
             if let client = esClient,
                startUploadGate(
@@ -292,7 +295,8 @@ public enum EndpointSecurityMonitor {
                 path: path,
                 destination: destination,
                 pid: pid,
-                process: processName
+                process: processName,
+                page: page
                ) {
                 retainForScan = true
             }
@@ -308,7 +312,13 @@ public enum EndpointSecurityMonitor {
             process: processName,
             at: now
         ) {
-            emitTransfer(transfer)
+            let page = browserPage(
+                process: processName,
+                pid: pid,
+                path: transfer.path,
+                direction: transfer.direction
+            )
+            emitTransfer(transfer.withTab(title: page?.title, url: page?.url))
         }
     }
 
@@ -319,7 +329,7 @@ public enum EndpointSecurityMonitor {
         } else {
             let time = DateFormatter.clock.string(from: event.timestamp)
             let label = event.direction.uppercased().padding(toLength: 8, withPad: " ", startingAt: 0)
-            print("[\(time)] \(label)  \(event.process)[\(event.pid)]  \(shellQuoted(event.path))")
+            print("[\(time)] \(label)  \(event.process)[\(event.pid)]  \(shellQuoted(event.path))\(tabSuffix(event.tabTitle, event.tabURL))")
         }
         persist(event)
     }
@@ -331,7 +341,8 @@ public enum EndpointSecurityMonitor {
         path: String,
         destination: String?,
         pid: pid_t,
-        process: String
+        process: String,
+        page: BrowserTab.Page?
     ) -> Bool {
         let transfer = TransferCorrelator.Transfer(
             timestamp: Date(),
@@ -339,7 +350,7 @@ public enum EndpointSecurityMonitor {
             pid: pid,
             process: process,
             path: path
-        )
+        ).withTab(title: page?.title, url: page?.url)
         return UploadGate.holdSyscall(
             client: client,
             message: message,
@@ -347,41 +358,11 @@ public enum EndpointSecurityMonitor {
             destination: destination,
             pid: pid,
             process: process,
-            onHold: { scanSeconds, authSeconds, freezeMode in
-                let detail: String
-                switch freezeMode {
-                case .thread(let id):
-                    detail = String(
-                        format: "scan %.1fs; thread %llu suspended (kernel AUTH reply in %.1fs)",
-                        scanSeconds,
-                        id,
-                        authSeconds
-                    )
-                case .process:
-                    detail = String(
-                        format: "scan %.1fs; process SIGSTOP fallback (kernel AUTH reply in %.1fs)",
-                        scanSeconds,
-                        authSeconds
-                    )
-                case nil:
-                    detail = String(format: "AUTH syscall held %.1fs (this open/copy only)", scanSeconds)
-                }
-                emitGate(label: "HOLD", pid: pid, process: process, path: path, detail: detail)
-            },
+            onHold: { _, _, _ in },
             onScanStart: {
                 emitScan(phase: "SCAN_START", transfer: transfer, at: Date(), verdict: nil, waited: nil)
             },
-            onAuthReply: { deny, stillFrozen in
-                let detail: String
-                if deny {
-                    detail = "AUTH deny — that read/copy refused"
-                } else if stillFrozen {
-                    detail = "AUTH allow — thread/process still held until scan ends"
-                } else {
-                    detail = "AUTH allow — that read/copy may proceed"
-                }
-                emitGate(label: "REPLY", pid: pid, process: process, path: path, detail: detail)
-            },
+            onAuthReply: { _, _ in },
             onScanStop: { verdict, waited in
                 let label = verdict == .allow ? "allowed" : "blocked"
                 emitScan(
@@ -392,16 +373,7 @@ public enum EndpointSecurityMonitor {
                     waited: waited
                 )
             },
-            onResume: { mode in
-                let detail: String
-                switch mode {
-                case .thread(let id):
-                    detail = "thread \(id) resumed — that send may continue"
-                case .process:
-                    detail = "SIGCONT — process may continue"
-                }
-                emitGate(label: "RESUME", pid: pid, process: process, path: path, detail: detail)
-            }
+            onResume: { _ in }
         )
     }
 
@@ -431,10 +403,11 @@ public enum EndpointSecurityMonitor {
         pid: pid_t,
         process: String,
         path: String,
+        page: BrowserTab.Page?,
         detail: String
     ) {
         let time = DateFormatter.clock.string(from: Date())
-        print("[\(time)] \(label.padding(toLength: 8, withPad: " ", startingAt: 0))  \(process)[\(pid)]  \(shellQuoted(path))  \(detail)")
+        print("[\(time)] \(label.padding(toLength: 8, withPad: " ", startingAt: 0))  \(process)[\(pid)]  \(shellQuoted(path))\(BrowserTab.logSuffix(page))  \(detail)")
     }
 
     private static func emitScan(
@@ -451,7 +424,9 @@ public enum EndpointSecurityMonitor {
             process: transfer.process,
             path: transfer.path,
             verdict: verdict,
-            delaySeconds: waited
+            delaySeconds: waited,
+            tabTitle: transfer.tabTitle,
+            tabURL: transfer.tabURL
         )
         if jsonOutput, let data = try? encoder.encode(event),
            let line = String(data: data, encoding: .utf8) {
@@ -459,7 +434,7 @@ public enum EndpointSecurityMonitor {
         } else {
             let clock = DateFormatter.clock.string(from: time)
             let label = phase == "SCAN_START" ? "SCAN START" : "SCAN STOP "
-            var line = "[\(clock)] \(label)  \(transfer.process)[\(transfer.pid)]  \(shellQuoted(transfer.path))"
+            var line = "[\(clock)] \(label)  \(transfer.process)[\(transfer.pid)]  \(shellQuoted(transfer.path))\(tabSuffix(transfer.tabTitle, transfer.tabURL))"
             if let verdict {
                 if let waited {
                     line += "  \(verdict) (simulated, \(String(format: "%.1f", waited))s)"
@@ -479,6 +454,21 @@ public enum EndpointSecurityMonitor {
         if let destination = event.destination { line += "  → \(shellQuoted(destination))" }
         if let inferred = event.inferred { line += "  [\(inferred)]" }
         print(line)
+    }
+
+    /// History/Session stay in-process; live title/url go through the
+    /// user-level tab helper when its socket is up (see TabHelper).
+    private static func browserPage(
+        process: String,
+        pid: pid_t,
+        path: String,
+        direction: String
+    ) -> BrowserTab.Page? {
+        BrowserTab.current(process: process, pid: pid, path: path, direction: direction)
+    }
+
+    private static func tabSuffix(_ title: String?, _ url: String?) -> String {
+        BrowserTab.logSuffix(BrowserTab.Page(title: title, url: url))
     }
 
     /// Quote a path so it pastes into `open`, `ls`, etc. without the shell
@@ -510,33 +500,70 @@ public enum EndpointSecurityMonitor {
 
     // MARK: - Filters
 
-    private static func matchesProcess(name: String, signingID: String) -> Bool {
-        guard !processFilters.isEmpty else { return true }
+    /// `--process Safari` must include WebKit WebContent/Networking: those
+    /// binaries open the file. The UI process path is `Safari`.
+    static func matchesProcess(name: String, signingID: String, filters: [String]) -> Bool {
+        guard !filters.isEmpty else { return true }
         let nameL = name.lowercased()
         let sid = signingID.lowercased()
-        return processFilters.contains { nameL.contains($0) || sid.contains($0) }
+        return filters.contains { filter in
+            if nameL.contains(filter) || sid.contains(filter) { return true }
+            if filter == "safari" && isSafariFamily(name: nameL, signingID: sid) {
+                return true
+            }
+            return false
+        }
+    }
+
+    static func isSafariFamily(name: String, signingID: String) -> Bool {
+        let n = name.lowercased()
+        let sid = signingID.lowercased()
+        return n.contains("safari")
+            || n.contains("webkit")
+            || sid.contains("com.apple.safari")
+            || sid.contains("com.apple.webkit")
+    }
+
+    private static func matchesProcess(name: String, signingID: String) -> Bool {
+        matchesProcess(name: name, signingID: signingID, filters: processFilters)
     }
 
     private static func shouldIgnore(path: String) -> Bool {
+        if FileClassifier.isHiddenPath(path) { return true }
         if path.hasPrefix("/dev/") { return true }
         if path.contains(".app/Contents/") { return true }
         if path.contains("/Library/Caches/") { return true }
         if path.contains("/Library/Logs/") { return true }
-        if path.contains("/.git/") { return true }
         return false
     }
 
+    /// File *targets* under these prefixes (not the issuing executable).
+    /// Process-prefix mute of `/System/` also silences Safari and WebKit, which
+    /// live in the cryptex (`/System/Cryptexes/…/Safari.app`) and
+    /// `/System/Library/Frameworks/WebKit.framework`.
+    static let mutedTargetPrefixes = [
+        "/System/",
+        "/usr/",
+        "/bin/",
+        "/sbin/",
+        "/private/var/db/",
+        "/Library/Apple/",
+        "/dev/",
+    ]
+
+    /// Executables we still ignore. Must not include Safari, WebKit, or
+    /// `/System/Applications/` — those are the apps we are watching.
+    static let mutedProcessPrefixes = [
+        "/System/Library/CoreServices/",
+        "/System/Library/PrivateFrameworks/",
+        "/usr/libexec/",
+    ]
+
     private static func muteNoisyPaths(_ client: OpaquePointer) {
-        let prefixes = [
-            "/System/",
-            "/usr/",
-            "/bin/",
-            "/sbin/",
-            "/private/var/db/",
-            "/Library/Apple/",
-            "/dev/",
-        ]
-        for prefix in prefixes {
+        for prefix in mutedTargetPrefixes {
+            _ = prefix.withCString { es_mute_path(client, $0, ES_MUTE_PATH_TYPE_TARGET_PREFIX) }
+        }
+        for prefix in mutedProcessPrefixes {
             _ = prefix.withCString { es_mute_path(client, $0, ES_MUTE_PATH_TYPE_PREFIX) }
         }
     }

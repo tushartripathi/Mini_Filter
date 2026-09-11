@@ -18,6 +18,16 @@ final class FileClassifierTests: XCTestCase {
         XCTAssertFalse(FileClassifier.isUserSource(path: Fixtures.appBundle))
         XCTAssertFalse(FileClassifier.isUserSource(path: Fixtures.blob))
         XCTAssertFalse(FileClassifier.isUserSource(path: "/usr/share/photo.png"))
+        XCTAssertFalse(FileClassifier.isUserSource(path: Fixtures.cursorSkill))
+    }
+
+    func testHiddenDotFoldersAreNotUserFiles() {
+        XCTAssertTrue(FileClassifier.isHiddenPath(Fixtures.cursorSkill))
+        XCTAssertTrue(FileClassifier.isHiddenPath("/Users/work/.git/config"))
+        XCTAssertTrue(FileClassifier.isHiddenPath("/Users/work/Desktop/.env"))
+        XCTAssertFalse(FileClassifier.isHiddenPath(Fixtures.desktopPNG))
+        XCTAssertFalse(FileClassifier.isHiddenPath("/Users/work/Documents/notes.md"))
+        XCTAssertFalse(FileClassifier.isUserDestination(path: "/Users/work/Desktop/.stash/a.png"))
     }
 
     func testAppContainerAndStaging() {
