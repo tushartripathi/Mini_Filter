@@ -9,11 +9,14 @@ final class UploadGateTests: XCTestCase {
         XCTAssertTrue(UploadGate.shouldGate(process: "Slack"))
         XCTAssertTrue(UploadGate.shouldGate(process: "Safari"))
         XCTAssertTrue(UploadGate.shouldGate(process: "com.apple.WebKit.WebContent"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "com.apple.Safari.SandboxBroker"))
         XCTAssertFalse(UploadGate.shouldGate(process: "filecoordinationd"))
         XCTAssertFalse(UploadGate.shouldGate(process: "com.apple.appkit.xpc.openAndSavePanelService"))
         XCTAssertFalse(UploadGate.shouldGate(process: "Finder"))
         XCTAssertFalse(UploadGate.shouldGate(process: "QuickLookUIService"))
         XCTAssertFalse(UploadGate.shouldGate(process: "mds"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "mdwrite"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "Preview"))
         XCTAssertFalse(UploadGate.shouldGate(process: "mdworker"))
         XCTAssertFalse(UploadGate.shouldGate(process: "MiniFilter"))
         XCTAssertFalse(UploadGate.shouldGate(process: "TextThumbnailExtension"))
@@ -23,6 +26,8 @@ final class UploadGateTests: XCTestCase {
         XCTAssertFalse(UploadGate.shouldGate(process: "git-remote-https"))
         XCTAssertTrue(UploadGate.shouldGate(process: "GitHub Desktop"))
         XCTAssertTrue(UploadGate.shouldGate(process: "org.mozilla.firefox"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "Cursor Helper (Plugin)"))
+        XCTAssertFalse(UploadGate.shouldGate(process: "Cursor Helper"))
     }
 
     func testHoldsReadOfUserSource() {

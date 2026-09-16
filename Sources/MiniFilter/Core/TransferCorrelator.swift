@@ -33,6 +33,7 @@ enum TransferCorrelator {
     private static var uploadsAt: [pid_t: Date] = [:]
     private static var cloneDests: [(path: String, time: Date)] = []
     private static var emitted: [(key: String, time: Date)] = []
+    private static var downloads: [(path: String, pid: pid_t, process: String, time: Date)] = []
 
     static func observe(
         event: String,
@@ -64,14 +65,14 @@ enum TransferCorrelator {
                 return emit(direction: "upload", path: path, pid: pid, process: process, at: time)
             }
             if let destination, FileClassifier.isUserDestination(path: destination) {
-                return emit(direction: "download", path: destination, pid: pid, process: process, at: time)
+                return emitDownload(path: destination, pid: pid, process: process, at: time)
             }
             if let destination,
                FileClassifier.isAppMediaStore(path: destination),
                !FileClassifier.isAppStaging(path: destination),
                !FileClassifier.isUserSource(path: path),
                !recentlyUploaded(pid: pid, at: time) {
-                return emit(direction: "download", path: destination, pid: pid, process: process, at: time)
+                return emitDownload(path: destination, pid: pid, process: process, at: time)
             }
             return nil
 
@@ -80,12 +81,12 @@ enum TransferCorrelator {
             if FileClassifier.isAppStaging(path: path) { return nil }
             if FileClassifier.isUserDestination(path: path) {
                 if recentOpen(pid: pid, at: time) == path { return nil }
-                return emit(direction: "download", path: path, pid: pid, process: process, at: time)
+                return emitDownload(path: path, pid: pid, process: process, at: time)
             }
             if FileClassifier.isAppMediaStore(path: path),
                FileClassifier.isUserFacingFile(path: path),
                !recentlyUploaded(pid: pid, at: time) {
-                return emit(direction: "download", path: path, pid: pid, process: process, at: time)
+                return emitDownload(path: path, pid: pid, process: process, at: time)
             }
             if FileClassifier.isAppContainer(path: path),
                let source = recentOpen(pid: pid, at: time) {
@@ -100,7 +101,7 @@ enum TransferCorrelator {
                 return emit(direction: "upload", path: path, pid: pid, process: process, at: time)
             }
             if FileClassifier.isUserDestination(path: destination) {
-                return emit(direction: "download", path: destination, pid: pid, process: process, at: time)
+                return emitDownload(path: destination, pid: pid, process: process, at: time)
             }
             return nil
 
@@ -109,7 +110,20 @@ enum TransferCorrelator {
         }
     }
 
+    /// Group Containers receives (WhatsApp media, …) are not scanned as downloads.
+    private static func emitDownload(
+        path: String,
+        pid: pid_t,
+        process: String,
+        at time: Date
+    ) -> Transfer? {
+        guard FileClassifier.shouldScanDownload(path: path) else { return nil }
+        guard DownloadGate.shouldScanProcess(process) else { return nil }
+        return emit(direction: "download", path: path, pid: pid, process: process, at: time)
+    }
+
     /// Record an upload at file-selection time so a later clone does not log twice.
+    /// A file this process just saved to Downloads is a download reopen, not a send.
     @discardableResult
     static func recordUpload(
         path: String,
@@ -120,7 +134,23 @@ enum TransferCorrelator {
         lock.lock()
         defer { lock.unlock() }
         prune(now: time)
+        if isRecentDownload(path: path, pid: pid, process: process, at: time) {
+            return nil
+        }
         return emit(direction: "upload", path: path, pid: pid, process: process, at: time)
+    }
+
+    /// Chrome (and others) re-open a completed download; that must not be gated.
+    static func recentlyDownloaded(
+        path: String,
+        pid: pid_t,
+        process: String,
+        at time: Date
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        prune(now: time)
+        return isRecentDownload(path: path, pid: pid, process: process, at: time)
     }
 
     static func resetForTests() {
@@ -130,6 +160,7 @@ enum TransferCorrelator {
         uploadsAt.removeAll()
         cloneDests.removeAll()
         emitted.removeAll()
+        downloads.removeAll()
     }
 
     // MARK: - Internals
@@ -148,6 +179,9 @@ enum TransferCorrelator {
         emitted.append((key, time))
         if direction == "upload" {
             uploadsAt[pid] = time
+        }
+        if direction == "download" {
+            downloads.append((path, pid, process, time))
         }
         return Transfer(
             timestamp: time,
@@ -174,6 +208,20 @@ enum TransferCorrelator {
         return time.timeIntervalSince(start) <= window
     }
 
+    private static func isRecentDownload(
+        path: String,
+        pid: pid_t,
+        process: String,
+        at time: Date
+    ) -> Bool {
+        let proc = process.lowercased()
+        return downloads.contains {
+            $0.path == path
+                && time.timeIntervalSince($0.time) <= window
+                && ($0.pid == pid || $0.process.lowercased() == proc)
+        }
+    }
+
     private static func isRecentCloneDest(_ path: String) -> Bool {
         cloneDests.contains { $0.path == path }
     }
@@ -186,5 +234,6 @@ enum TransferCorrelator {
         uploadsAt = uploadsAt.filter { fresh($0.value) }
         cloneDests = cloneDests.filter { fresh($0.time) }
         emitted = emitted.filter { now.timeIntervalSince($0.time) <= dedupeWindow }
+        downloads = downloads.filter { fresh($0.time) }
     }
 }

@@ -43,7 +43,7 @@ final class PendingAuth {
         case ES_EVENT_TYPE_AUTH_OPEN:
             let flags: UInt32 = deny ? 0 : UInt32(bitPattern: Int32(truncatingIfNeeded: msg.event.open.fflag))
             _ = es_respond_flags_result(client, message, flags, false)
-        case ES_EVENT_TYPE_AUTH_CLONE, ES_EVENT_TYPE_AUTH_COPYFILE:
+        case ES_EVENT_TYPE_AUTH_CLONE, ES_EVENT_TYPE_AUTH_COPYFILE, ES_EVENT_TYPE_AUTH_EXEC:
             let result: es_auth_result_t = deny ? ES_AUTH_RESULT_DENY : ES_AUTH_RESULT_ALLOW
             _ = es_respond_auth_result(client, message, result, false)
         default:
@@ -107,9 +107,12 @@ enum UploadGate {
     /// Short names (`rg`, `git`) are exact so they cannot match inside Chrome, etc.
     private static let skipHoldExact: Set<String> = [
         "mds",
+        "mdwrite",
+        "preview",
         "rg",
         "git",
         "ripgrep",
+        "com.apple.safari.sandboxbroker",
     ]
 
     private static let skipHoldPrefixes: [String] = [
@@ -135,6 +138,7 @@ enum UploadGate {
         "bird",
         "openandsavepanel",
         "filecoordinationd",
+        "cursor helper",
     ]
 
     /// After a scan allows a file, skip re-holding OPEN→CLONE of *that same

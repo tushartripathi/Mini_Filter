@@ -32,11 +32,15 @@ final class FileClassifierTests: XCTestCase {
 
     func testAppContainerAndStaging() {
         XCTAssertTrue(FileClassifier.isAppContainer(path: Fixtures.whatsAppCopy))
+        XCTAssertTrue(FileClassifier.isGroupContainer(Fixtures.whatsAppCopy))
         XCTAssertTrue(FileClassifier.isAppContainer(path: Fixtures.whatsAppStaging))
         XCTAssertTrue(FileClassifier.isAppMediaStore(path: Fixtures.whatsAppCopy))
         XCTAssertTrue(FileClassifier.isAppStaging(path: Fixtures.whatsAppStaging))
         XCTAssertFalse(FileClassifier.isAppContainer(path: Fixtures.desktopPNG))
+        XCTAssertFalse(FileClassifier.isGroupContainer(Fixtures.downloadsPNG))
         XCTAssertFalse(FileClassifier.isAppStaging(path: Fixtures.desktopPNG))
+        XCTAssertFalse(FileClassifier.shouldScanDownload(path: Fixtures.whatsAppCopy))
+        XCTAssertTrue(FileClassifier.shouldScanDownload(path: Fixtures.downloadsPNG))
     }
 
     func testUserDestination() {

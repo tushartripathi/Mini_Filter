@@ -59,7 +59,7 @@ public enum EndpointSecurityMonitor {
         print("gate:      scan \(Int(FileScanner.delaySeconds))s then \(verdict); suspend issuing thread if that exceeds AUTH deadline")
         print(String(repeating: "-", count: 72))
         print("Attach or send a file in any app (WhatsApp, Chrome, Mail, Slack, …).")
-        print("Only that file open/copy waits; Finder/Spotlight/QuickLook are not gated.")
+        print("Downloads hold open/read until the scan allows (no permission dialog); uploads hold the send.")
         print("If the app opens the file on its UI thread, that window still waits on the syscall.")
         print("Kernel AUTH must be answered in ~15s. Longer scans suspend that thread (SIGSTOP fallback).")
         print("Pass --process NAME to watch one app. Pass --scan-reject to test deny.")
@@ -88,6 +88,7 @@ public enum EndpointSecurityMonitor {
             ES_EVENT_TYPE_AUTH_OPEN,
             ES_EVENT_TYPE_AUTH_CLONE,
             ES_EVENT_TYPE_AUTH_COPYFILE,
+            ES_EVENT_TYPE_AUTH_EXEC,
             ES_EVENT_TYPE_NOTIFY_CREATE,
             ES_EVENT_TYPE_NOTIFY_RENAME,
             ES_EVENT_TYPE_NOTIFY_CLOSE,
@@ -167,7 +168,6 @@ public enum EndpointSecurityMonitor {
         let signingID = esString(process.signing_id)
         let exe = esString(process.executable.pointee.path)
         let processName = (exe as NSString).lastPathComponent
-        if !matchesProcess(name: processName, signingID: signingID) { return }
 
         var eventName = ""
         var path = ""
@@ -184,6 +184,10 @@ public enum EndpointSecurityMonitor {
             access = [read ? "read" : nil, write ? "write" : nil]
                 .compactMap { $0 }.joined(separator: "+")
             if read { inferred = "possible-upload-source" }
+
+        case ES_EVENT_TYPE_AUTH_EXEC:
+            path = esString(msg.event.exec.target.pointee.executable.pointee.path)
+            eventName = "EXEC"
 
         case ES_EVENT_TYPE_AUTH_CLONE:
             path = esString(msg.event.clone.source.pointee.path)
@@ -228,6 +232,63 @@ public enum EndpointSecurityMonitor {
         }
 
         guard !path.isEmpty else { return }
+
+        let downloadPath = DownloadGate.shouldDenyAccess(path) || DownloadGate.shouldHoldAccess(path)
+            ? path
+            : destination.flatMap {
+                DownloadGate.shouldDenyAccess($0) || DownloadGate.shouldHoldAccess($0) ? $0 : nil
+            }
+        if let downloadPath {
+            if DownloadGate.shouldDenyAccess(downloadPath) {
+                denyAuth = true
+                emitGate(
+                    label: "BLOCKED",
+                    pid: pid,
+                    process: processName,
+                    path: path,
+                    page: browserPage(
+                        process: processName,
+                        pid: pid,
+                        path: path,
+                        direction: "download"
+                    ),
+                    detail: "download scan denied"
+                )
+                return
+            }
+
+            if DownloadGate.shouldHoldAccess(downloadPath) {
+                let accessLabel = access.flatMap { $0.isEmpty ? nil : $0 }
+                if eventName == "OPEN", DownloadGate.shouldAllowWriteOnlyOpen(access: accessLabel) {
+                    // Browser finishing the save — do not hold write-only opens.
+                    return
+                }
+                // The app that just saved this file (WhatsApp, Chrome, …) must keep
+                // running to finish the download UI. Hold everyone else.
+                if DownloadGate.isDownloader(path: downloadPath, pid: pid, process: processName)
+                    || TransferCorrelator.recentlyDownloaded(
+                        path: downloadPath,
+                        pid: pid,
+                        process: processName,
+                        at: Date()
+                    ) {
+                    return
+                }
+                if eventName == "OPEN" || eventName == "CLONE" || eventName == "COPYFILE" || eventName == "EXEC",
+                   let client = esClient,
+                   DownloadGate.holdAccess(
+                    client: client,
+                    message: message,
+                    path: downloadPath,
+                    pid: pid
+                   ) {
+                    retainForScan = true
+                }
+                return
+            }
+        }
+
+        if !matchesProcess(name: processName, signingID: signingID) { return }
         if shouldIgnore(path: path) { return }
         if let destination, shouldIgnore(path: destination) { return }
         if userFacingOnly && !FileClassifier.isUserFacingFile(path: path) {
@@ -269,14 +330,22 @@ public enum EndpointSecurityMonitor {
             ))
         }
 
+        let recentlySaved = TransferCorrelator.recentlyDownloaded(
+            path: path,
+            pid: pid,
+            process: processName,
+            at: now
+        )
         let holdOpen = eventName == "OPEN"
             && UploadGate.shouldGate(process: processName)
             && UploadGate.shouldHoldOpen(path: path, access: accessLabel)
             && !UploadGate.wasAllowed(path: path)
+            && !recentlySaved
         let holdCopy = (eventName == "CLONE" || eventName == "COPYFILE")
             && UploadGate.shouldGate(process: processName)
             && UploadGate.shouldHoldCopy(source: path, destination: destination)
             && !UploadGate.wasAllowed(path: path)
+            && !recentlySaved
 
         if holdOpen || holdCopy {
             let page = browserPage(process: processName, pid: pid, path: path, direction: "upload")
@@ -319,6 +388,11 @@ public enum EndpointSecurityMonitor {
                 direction: transfer.direction
             )
             emitTransfer(transfer.withTab(title: page?.title, url: page?.url))
+            if transfer.direction == "download",
+               FileClassifier.shouldScanDownload(path: transfer.path),
+               DownloadGate.shouldScanProcess(transfer.process) {
+                startDownloadScan(transfer.withTab(title: page?.title, url: page?.url))
+            }
         }
     }
 
@@ -377,10 +451,32 @@ public enum EndpointSecurityMonitor {
         )
     }
 
+    private static func startDownloadScan(_ transfer: TransferCorrelator.Transfer) {
+        _ = DownloadGate.startScan(
+            path: transfer.path,
+            pid: transfer.pid,
+            process: transfer.process,
+            onStart: {
+                emitScan(phase: "SCAN_START", transfer: transfer, at: Date(), verdict: nil, waited: nil)
+            },
+            onStop: { verdict, waited in
+                let label = verdict == .allow ? "allowed" : "blocked"
+                emitScan(
+                    phase: "SCAN_STOP",
+                    transfer: transfer,
+                    at: Date(),
+                    verdict: label,
+                    waited: waited
+                )
+            }
+        )
+    }
+
     private static func isAuth(_ type: es_event_type_t) -> Bool {
         type == ES_EVENT_TYPE_AUTH_OPEN
             || type == ES_EVENT_TYPE_AUTH_CLONE
             || type == ES_EVENT_TYPE_AUTH_COPYFILE
+            || type == ES_EVENT_TYPE_AUTH_EXEC
     }
 
     private static func respondAuth(_ message: UnsafePointer<es_message_t>, deny: Bool) {
@@ -388,9 +484,11 @@ public enum EndpointSecurityMonitor {
         let msg = message.pointee
         switch msg.event_type {
         case ES_EVENT_TYPE_AUTH_OPEN:
-            let flags: UInt32 = deny ? 0 : UInt32(bitPattern: Int32(truncatingIfNeeded: msg.event.open.fflag))
+            let flags: UInt32 = deny
+                ? 0
+                : UInt32(bitPattern: Int32(truncatingIfNeeded: msg.event.open.fflag))
             _ = es_respond_flags_result(client, message, flags, false)
-        case ES_EVENT_TYPE_AUTH_CLONE, ES_EVENT_TYPE_AUTH_COPYFILE:
+        case ES_EVENT_TYPE_AUTH_CLONE, ES_EVENT_TYPE_AUTH_COPYFILE, ES_EVENT_TYPE_AUTH_EXEC:
             let result: es_auth_result_t = deny ? ES_AUTH_RESULT_DENY : ES_AUTH_RESULT_ALLOW
             _ = es_respond_auth_result(client, message, result, false)
         default:
@@ -572,6 +670,7 @@ public enum EndpointSecurityMonitor {
 
     private static func stop(message: String) {
         UploadGate.replyAllAllow()
+        DownloadGate.releasePending()
         if let client = esClient {
             es_delete_client(client)
             esClient = nil

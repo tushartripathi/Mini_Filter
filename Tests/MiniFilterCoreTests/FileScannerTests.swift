@@ -2,13 +2,20 @@ import XCTest
 @testable import MiniFilterCore
 
 final class FileScannerTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        FileScanner.delaySeconds = 17
+        FileScanner.simulatedVerdict = .allow
+    }
+
     override func tearDown() {
         FileScanner.simulatedVerdict = .allow
+        FileScanner.delaySeconds = 17
         super.tearDown()
     }
 
-    func testDefaultDelayIsTwentySeconds() {
-        XCTAssertEqual(FileScanner.delaySeconds, 45)
+    func testDefaultDelayIsSeventeenSeconds() {
+        XCTAssertEqual(FileScanner.delaySeconds, 17)
     }
 
     func testScanCallsStartThenAllow() {

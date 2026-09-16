@@ -69,6 +69,85 @@ final class TransferCorrelatorTests: XCTestCase {
         XCTAssertEqual(transfer?.path, Fixtures.downloadsPNG)
     }
 
+    func testGroupContainerMediaReceiveIsNotDownloadScan() {
+        let media =
+            "/Users/work/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media/171652964950141@lid/f/c/fcff7305-8c05-40d5-9678-c42e9b36b0ce.jpg"
+        XCTAssertNil(
+            TransferCorrelator.observe(
+                event: "WRITE",
+                path: media,
+                destination: nil,
+                access: nil,
+                pid: pid,
+                process: process,
+                at: t0
+            ),
+            "WhatsApp in-app media must not start a download scan"
+        )
+        XCTAssertNil(
+            TransferCorrelator.observe(
+                event: "WRITE",
+                path: Fixtures.whatsAppCopy,
+                destination: nil,
+                access: nil,
+                pid: pid,
+                process: process,
+                at: t0.addingTimeInterval(1)
+            )
+        )
+        // Upload into Group Containers still works.
+        let upload = TransferCorrelator.observe(
+            event: "CLONE",
+            path: Fixtures.desktopPNG,
+            destination: Fixtures.whatsAppCopy,
+            access: nil,
+            pid: pid,
+            process: process,
+            at: t0.addingTimeInterval(2)
+        )
+        XCTAssertEqual(upload?.direction, "upload")
+        XCTAssertEqual(upload?.path, Fixtures.desktopPNG)
+    }
+
+    func testChromeReopenOfDownloadIsNotUpload() {
+        XCTAssertNotNil(
+            TransferCorrelator.observe(
+                event: "WRITE",
+                path: Fixtures.downloadsPNG,
+                destination: nil,
+                access: nil,
+                pid: pid,
+                process: "Google Chrome",
+                at: t0
+            )
+        )
+        XCTAssertTrue(
+            TransferCorrelator.recentlyDownloaded(
+                path: Fixtures.downloadsPNG,
+                pid: pid,
+                process: "Google Chrome",
+                at: t0.addingTimeInterval(1)
+            )
+        )
+        XCTAssertNil(
+            TransferCorrelator.recordUpload(
+                path: Fixtures.downloadsPNG,
+                pid: pid,
+                process: "Google Chrome",
+                at: t0.addingTimeInterval(1)
+            ),
+            "Re-opening a file this process just saved is not an upload"
+        )
+        XCTAssertNotNil(
+            TransferCorrelator.recordUpload(
+                path: Fixtures.desktopPNG,
+                pid: pid,
+                process: "Google Chrome",
+                at: t0.addingTimeInterval(1)
+            )
+        )
+    }
+
     func testSameUploadIsDedupedWithinWindow() {
         XCTAssertNotNil(
             TransferCorrelator.recordUpload(

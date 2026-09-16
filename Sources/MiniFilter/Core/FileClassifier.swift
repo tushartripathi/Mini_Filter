@@ -47,9 +47,20 @@ enum FileClassifier {
 
     static func isAppContainer(path: String) -> Bool {
         path.contains("/Library/Containers/")
-            || path.contains("/Library/Group Containers/")
+            || isGroupContainer(path)
             || path.contains("/Library/Application Support/")
             || path.contains("/Library/Daemon Containers/")
+    }
+
+    /// Shared app sandbox (WhatsApp Message/Media, …). In-app receives are not
+    /// user Downloads; skip download scanning for these paths.
+    static func isGroupContainer(_ path: String) -> Bool {
+        path.contains("/Library/Group Containers/")
+    }
+
+    /// Downloads we hold/scan: Desktop/Downloads/… — not Group Containers.
+    static func shouldScanDownload(path: String) -> Bool {
+        !isGroupContainer(path)
     }
 
     /// Where a person would save or drop a received file.
