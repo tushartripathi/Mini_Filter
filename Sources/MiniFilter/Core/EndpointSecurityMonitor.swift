@@ -49,7 +49,7 @@ public enum EndpointSecurityMonitor {
         print("events:    UPLOAD / DOWNLOAD (original file path)")
         print("files:     \(options.userFacingOnly ? "user-facing extensions only" : "all paths")")
         print("processes: \(options.processFilters.isEmpty ? "all" : options.processFilters.joined(separator: ", "))")
-        print("tabs:      Chrome/Edge/Brave from the profile on disk; Safari via WebKit helpers")
+        print("tabs:      Chrome/Edge/Brave from the profile on disk; Firefox from sessionstore; Safari via WebKit helpers")
         if options.verbose { print("verbose:   raw Endpoint Security events") }
         if let seconds = options.seconds {
             print("duration:  \(Int(seconds))s")

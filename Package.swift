@@ -15,6 +15,7 @@ let package = Package(
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("SystemConfiguration"),
+                .linkedLibrary("compression"),
             ]
         ),
         .executableTarget(

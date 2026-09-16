@@ -109,12 +109,16 @@ enum BrowserTab {
         guard let spec = catalog(for: process) else { return nil }
 
         var page: Page?
-        if direction == "download", let path, let userData = spec.userData {
-            page = pageFromChromiumHistory(userData: userData, filePath: path)
-        }
-        if (page?.url == nil || page?.title == nil), let userData = spec.userData {
-            if let session = pageFromChromiumSession(userData: userData) {
-                page = merge(history: page, live: session)
+        if spec.app == "Firefox" {
+            page = pageFromFirefoxSession()
+        } else {
+            if direction == "download", let path, let userData = spec.userData {
+                page = pageFromChromiumHistory(userData: userData, filePath: path)
+            }
+            if (page?.url == nil || page?.title == nil), let userData = spec.userData {
+                if let session = pageFromChromiumSession(userData: userData) {
+                    page = merge(history: page, live: session)
+                }
             }
         }
         if page?.url == nil || page?.title == nil {
@@ -173,6 +177,7 @@ enum BrowserTab {
     static func livePage(process: String, pid: pid_t) -> Page? {
         guard let spec = catalog(for: process) else { return nil }
         let title = axWindowTitle(for: pid, app: spec.app)
+            ?? windowTitle(for: pid, app: spec.app)
         let page = Page(title: title, url: nil)
         return page.isEmpty ? nil : page
     }
@@ -199,15 +204,30 @@ enum BrowserTab {
     static func cleanedWindowTitle(_ raw: String, app: String) -> String? {
         var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
-        let suffix = " - \(app)"
-        if name.hasSuffix(suffix) {
+        let suffixes = [
+            " — Mozilla \(app)",
+            " – Mozilla \(app)",
+            " - Mozilla \(app)",
+            " — \(app)",
+            " – \(app)",
+            " - \(app)",
+        ]
+        var stripped = false
+        for suffix in suffixes where name.hasSuffix(suffix) {
             name = String(name.dropLast(suffix.count))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if name.hasSuffix(app) {
-            name = String(name.dropLast(app.count))
-                .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "-")))
+            stripped = true
+            break
         }
-        guard !name.isEmpty, name.caseInsensitiveCompare(app) != .orderedSame else {
+        if !stripped, name.hasSuffix(app) {
+            name = String(name.dropLast(app.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "-—–")))
+        }
+        guard !name.isEmpty,
+              name.caseInsensitiveCompare(app) != .orderedSame,
+              name.caseInsensitiveCompare("Mozilla") != .orderedSame,
+              name.caseInsensitiveCompare("Mozilla \(app)") != .orderedSame
+        else {
             return nil
         }
         if isFileDialogTitle(name) { return nil }
@@ -306,6 +326,20 @@ enum BrowserTab {
             if let page = pageFromHistory(database: db, filePath: filePath) {
                 return page
             }
+        }
+        return nil
+    }
+
+    private static func pageFromFirefoxSession() -> Page? {
+        let root = userHome.appending(path: "Library/Application Support/Firefox")
+        let iniPath = root.appending(path: "profiles.ini")
+        let ini = (try? String(contentsOf: iniPath, encoding: .utf8)) ?? ""
+        let profiles = FirefoxSession.profileDirectories(root: root, ini: ini)
+        for profile in profiles {
+            guard let file = FirefoxSession.latestSessionFile(in: profile),
+                  let page = FirefoxSession.activePage(file: file)
+            else { continue }
+            return page
         }
         return nil
     }

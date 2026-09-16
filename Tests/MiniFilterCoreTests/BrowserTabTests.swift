@@ -16,6 +16,8 @@ final class BrowserTabTests: XCTestCase {
         XCTAssertEqual(BrowserTab.catalog(for: "Microsoft Edge")?.app, "Microsoft Edge")
         XCTAssertEqual(BrowserTab.catalog(for: "Brave Browser")?.app, "Brave Browser")
         XCTAssertEqual(BrowserTab.catalog(for: "Arc")?.app, "Arc")
+        XCTAssertEqual(BrowserTab.catalog(for: "firefox")?.app, "Firefox")
+        XCTAssertEqual(BrowserTab.catalog(for: "Firefox")?.app, "Firefox")
         XCTAssertNil(BrowserTab.catalog(for: "WhatsApp"))
         XCTAssertNil(BrowserTab.catalog(for: "Finder"))
         XCTAssertNil(BrowserTab.catalog(for: "Archive Utility"))
@@ -139,6 +141,19 @@ final class BrowserTabTests: XCTestCase {
             "Inbox"
         )
         XCTAssertEqual(
+            BrowserTab.cleanedWindowTitle(
+                "Download Free HD Wallpapers | Unsplash — Mozilla Firefox",
+                app: "Firefox"
+            ),
+            "Download Free HD Wallpapers | Unsplash"
+        )
+        XCTAssertEqual(
+            BrowserTab.cleanedWindowTitle("Inbox - Mozilla Firefox", app: "Firefox"),
+            "Inbox"
+        )
+        XCTAssertNil(BrowserTab.cleanedWindowTitle("Mozilla Firefox", app: "Firefox"))
+        XCTAssertNil(BrowserTab.cleanedWindowTitle("Firefox", app: "Firefox"))
+        XCTAssertEqual(
             BrowserTab.pickWindowTitle(
                 windows: [
                     (pid: 30410, name: "Open"),
@@ -173,6 +188,62 @@ final class BrowserTabTests: XCTestCase {
         )
         let owners = BrowserTab.axOwnerPIDs(eventPid: 4472, app: "Safari")
         XCTAssertTrue(owners.contains(4472))
+    }
+
+    func testFirefoxSessionPicksSelectedTab() {
+        let json = Data("""
+        {
+          "selectedWindow": 1,
+          "windows": [{
+            "selected": 2,
+            "tabs": [
+              {"index": 1, "entries": [{"url": "https://example.com/old", "title": "Old"}]},
+              {"index": 1, "entries": [{"url": "https://unsplash.com/wallpapers", "title": "Wallpapers"}]}
+            ]
+          }]
+        }
+        """.utf8)
+        let page = FirefoxSession.activePage(json: json)
+        XCTAssertEqual(page?.url, "https://unsplash.com/wallpapers")
+        XCTAssertEqual(page?.title, "Wallpapers")
+    }
+
+    func testFirefoxSessionDecodesMozLz4() {
+        let json = Data("""
+        {"selectedWindow":1,"windows":[{"selected":1,"tabs":[{"index":1,"entries":[{"url":"https://unsplash.com/wallpapers","title":"Wallpapers"}]}]}]}
+        """.utf8)
+        guard let blob = FirefoxSession.makeMozLz4(json) else {
+            XCTFail("lz4 encode")
+            return
+        }
+        let page = FirefoxSession.activePage(data: blob)
+        XCTAssertEqual(page?.url, "https://unsplash.com/wallpapers")
+        XCTAssertEqual(page?.title, "Wallpapers")
+    }
+
+    func testFirefoxProfilesPreferInstallDefault() {
+        let ini = """
+        [Profile0]
+        Name=default-release
+        IsRelative=1
+        Path=Profiles/b0v1vci5.default-release
+
+        [InstallABCD]
+        Default=Profiles/b0v1vci5.default-release
+
+        [Profile1]
+        Name=default
+        IsRelative=1
+        Path=Profiles/o3z3tui1.default
+        Default=1
+        """
+        let root = URL(fileURLWithPath: "/Users/work/Library/Application Support/Firefox")
+        let dirs = FirefoxSession.profileDirectories(root: root, ini: ini)
+        XCTAssertEqual(
+            dirs.first?.path,
+            "/Users/work/Library/Application Support/Firefox/Profiles/b0v1vci5.default-release"
+        )
+        XCTAssertEqual(dirs.count, 2)
     }
 
     func testQueryTimeoutReturnsNil() throws {
