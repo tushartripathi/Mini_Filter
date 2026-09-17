@@ -109,6 +109,7 @@ That is the log you saw at 12:38. The website name came from **step 5 (disk)**, 
 Entry scripts:
 
 - `./run_esmonitor.sh` — build, ad-hoc sign with ES entitlement, `sudo MiniFilter --esmonitor`
+- `./run_esmonitor.sh --install` — same binary as a **system LaunchDaemon** (`com.minifilter.esmonitor`)
 - `./run_tabhelper.sh` — build helper, run as **you** (optional `--install` LaunchAgent)
 
 ### 4.2 Event pipeline (`EndpointSecurityMonitor`)

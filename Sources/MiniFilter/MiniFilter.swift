@@ -26,6 +26,8 @@ enum MiniFilter {
             MiniFilter Endpoint Security PoC
 
               ./run_esmonitor.sh [--process NAME] [--seconds N] [--json] [--verbose] [--all-files] [--scan-reject]
+              ./run_esmonitor.sh --install [--process NAME]
+              ./run_esmonitor.sh --uninstall
               ./run_tabhelper.sh
 
             Default watches every user app. Examples:
